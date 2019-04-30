@@ -24,8 +24,23 @@
 #define OSA "osascript -e \"tell app \\\"Terminal\\\" "
 #define NEW_WIN "open -a Terminal.app res/screen.terminal"
 #define CNT_WIN OSA"to count windows\""
+
 #define GET_WIN_TTY OSA"to get tty of window %d\""
 #define GET_WIN_ID OSA"to get id of window %d\""
+#define GET_FONT_NAME OSA"to get font name of window id %d\""
+#define GET_FONT_SIZE OSA"to get font size of window id %d\""
+#define GET_WIN_SIZE OSA"to get size of window id %d\"" 
+#define GET_WIN_BNDS OSA"to get bounds of window id %d\"" 
+#define GET_WIN_ROWS OSA"to get number of rows of window id %d\"" 
+#define GET_WIN_COLS OSA"to get number of columns of window id %d\"" 
+#define GET_TERM_SIZE
+
+#define SET_FONT_NAME OSA"to set font name of window id %d to \\\"%s\\\"\""
+#define SET_FONT_SIZE OSA"to set font size of window id %d to %d\""
+#define SET_WIN_SIZE OSA"to get size of window id to {%d,%d}\"" 
+#define SET_WIN_BNDS OSA"to get bounds of window id to {%d,%d,%d,%d}\"" 
+#define SET_WIN_ROWS OSA"to set number of rows of window id %d to %d\"" 
+#define SET_WIN_COLS OSA"to set number of columns of window id %d to %d\"" 
 
 #endif
 
@@ -51,21 +66,6 @@
 
 #ifdef __APPLE__
 
-#define GET_FONT_NAME \
-	"osascript -e \"tell application \\\"Terminal\\\" "\
-	"to get the font name of window 1\""
-#define GET_FONT_SIZE \
-	"osascript -e \"tell application \\\"Terminal\\\" "\
-	"to get the font size of window 1\""
-#define SET_FONT_NAME \
-	"osascript -e \"tell application \\\"Terminal\\\" "\
-	"to set the font name of window 1 to \\\"%s\\\"\""
-#define SET_FONT_SIZE \
-	"osascript -e \"tell application \\\"Terminal\\\" "\
-	"to set the font size of window 1 to \\\"%d\\\"\""
-#define GET_SCR_SIZE \
-	"osascript -e \"tell application \\\"Terminal\\\" "\
-	"to get the bounds of window 1\""
 */
 /*
 #define SET_SCR_SIZE \
@@ -79,8 +79,8 @@
  * Courier New PMST, 12, 30, 86, 420, 602
  * Courier New PMST, 11
  * Courier New PMST, 10
- * Courier New PMST, 9
- * Courier New PMST, 8
+ * Courier New PMST, 9, 24, 80, 264, 400
+ * Courier New PMST, 8, 24, 80, 240, 400
  * Courier New PMST, 7
  * Courier New PMST, 6
  * Courier New PMST, 5
@@ -101,7 +101,10 @@ struct pix {
 static struct pix pix_tbl[] = {
 	{1, 2, 1, 1, 2},
 	{2, 3, 1, 1, 3},
-	{3, 4, 2, 1, 2}
+	{3, 4, 2, 1, 2},
+	{8, 10, 5, 1, 2},
+	{9, 11, 5, 5, 11},
+	{12, 14, 7, 1, 2}
 };
 static int n_pix = sizeof(pix_tbl) / sizeof(struct pix);
 
@@ -112,14 +115,16 @@ typedef struct scr {
 	int height;
 	int width;
 	int cur_buf;
-	int buf[2][MAX_HEIGHT][MAX_WIDTH]; /* 256 color array */
-	int row_sc; /* scalar to multiply the height by to get the column */
-	int col_sc; /* scalar to multiply the width by to get the row */
-	int ppr; /* the number of physical pixels per row */
-	int ppc; /* the number of physical pixels per column */
-	int win_id; /* the unique id of the window from the OS */
-	char tty[MAX_TTYNAME]; /* the name of the terminal */
-	int fd; /* the file descriptor for the terminal */
+	int buf[2][MAX_HEIGHT][MAX_WIDTH]; // 256 color array
+	int row_sc; // scalar to multiply the height by to get the column
+	int col_sc; // scalar to multiply the width by to get the row
+	int ppr; // the number of physical pixels per row 
+	int ppc; // the number of physical pixels per column
+	int win_id; // the unique id of the window from the OS
+	char tty[MAX_TTYNAME]; // the name of the terminal
+	int fd; // the file descriptor for the terminal
+	int cur_x; // the x coordinate of the screen pointer
+	int cur_y; // the y coordinate of the screen pointer
 } Scr;
 
 Scr scr;
@@ -174,6 +179,9 @@ static int check_scr_args(char title[], int height, int width, int pix_size);
 static int init_scr_state(char title[], int height, int width, int pix_size);
 static int create_win(void);
 static int conn_win(void);
+//static int get_font_size(void);
+static int set_font_size(int size);
+static int print_win_size(void)
 
 
 int init_scr(char title[], int height, int width, int pix_size)
@@ -185,6 +193,8 @@ int init_scr(char title[], int height, int width, int pix_size)
 	if (create_win() == -1)
 		return -1;
 	if (conn_win() == -1)
+		return -1;
+	if (set_font_size(pix_size) == -1)
 		return -1;
 
 	return 0;
@@ -281,7 +291,6 @@ static int create_win(void)
 	}
 
 	/* Create the new terminal window */
-	//if (!WIFEXITED(
 	status = system(NEW_WIN);
 	if (!WIFEXITED(status))
 		return -1;
@@ -326,6 +335,7 @@ static int create_win(void)
 			ttyname[strnlen(ttyname, MAX_TTYNAME) - 1] = '\0';
 			strcpy(scr.tty, ttyname);
 			scr.win_id = id;
+			scr.cur_x = scr.cur_y = 0;
 		}
 
 	}
@@ -336,22 +346,81 @@ static int create_win(void)
 
 static int conn_win(void)
 {
-	off_t pos;
+	//off_t pos;
 
-	printf("tty is %s\n", scr.tty);
 	if ((scr.fd = open(scr.tty, O_RDWR | O_NOCTTY)) == -1)
 		return -1;
-	pos = lseek(scr.fd, 0, SEEK_CUR);
-	printf("%lld\n", pos);
-	printf("fd %d\n", scr.fd);
-	write(scr.fd, "HI", 2);
-	pos = lseek(scr.fd, 0, SEEK_CUR);
-	printf("%lld\n", pos);
-	printf("\x1b[48;5;%dm \x1b[0m\n", 121);
-	write(scr.fd, "\x1b[48;5;121m \x1b[0m", 16);
+	//pos = lseek(scr.fd, 0, SEEK_CUR);
+	//printf("%lld\n", pos);
+	//printf("fd %d\n", scr.fd);
+	//write(scr.fd, "HI", 2);
+	//pos = lseek(scr.fd, 0, SEEK_CUR);
+	//printf("%lld\n", pos);
+	//printf("\x1b[48;5;%dm \x1b[0m\n", 121);
+	//write(scr.fd, "\x1b[48;5;121m \x1b[0m", 16);
 
 	return 0;
 }
+
+/*
+static int get_font_size(void)
+{
+	FILE *fp;
+	char buf[32], *end, cmd[100];
+	int size;
+
+	sprintf(cmd, GET_FONT_SIZE, scr.win_id);
+	if ((fp = popen(cmd, "r")) == NULL)
+		return -1;
+	if (fgets(buf, 32, fp) == NULL)
+		return -1;
+	if (pclose(fp) == -1)
+		return -1;
+
+	buf[strlen(buf) - 1] = '\0'; // remove the newline char added by fgets 
+	errno = 0;
+	if ((size = (int) strtol(buf, &end, 10)) == 0 && errno != 0)
+		return -1;
+
+	return size;
+}
+*/
+
+static int set_font_size(int size)
+{
+	int status;
+	char cmd[100];
+
+	sprintf(cmd, SET_FONT_SIZE, scr.win_id, size);
+	status = system(cmd);
+	if (!WIFEXITED(status))
+		return -1;
+
+	return 0;
+}
+
+//static int set_font_size(int size);
+	/* font name */
+	//fp = popen(GET_FONT_NAME, "r");
+	//fgets(pwin.font_name, 32, fp);
+	//pwin.font_name[strlen(pwin.font_name) - 1] = '\0';
+	//pclose(fp);
+
+
+
+static int print_win_size(void)
+{
+	struct winsize size; /* ws_row, ws_col, ws_ypixel, ws_xpixel */
+
+	ioctl(STDOUT_FILENO, TIOCGWINSZ, &size);
+	printf("Rows %d\n", size.ws_row);
+	printf("Cols %d\n", size.ws_col);
+	printf("Height %d\n", size.ws_ypixel);
+	printf("Width %d\n", size.ws_xpixel);
+
+	return 0;
+}
+
 	/*
 	char buf[32];
 	if ((out = popen(GET_FONT_SIZE, "r")) == NULL)

@@ -2,11 +2,9 @@
 #define DISPLAY_H
 
 
-//typedef struct screen Screen;
-/* Screen represents the pixel screen. There is a single, global instance of
- * the pixel screen. However, it has two buffers. One of the buffers is the
- * current buffer and the other buffer is the next buffer. The current buffer
- * is always the buffer that is displayed.
+/* There is a single, global instance of the pixel screen. It has two buffers.
+ * One of the buffers is the current buffer and the other buffer is the next
+ * buffer. The current buffer is always the buffer that is displayed.
  */
 
 
