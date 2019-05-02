@@ -8,8 +8,8 @@
  */
 
 
-int init_scr(char title[], int height, int width, int pix_size);
-/* Initializes the screen.
+int open_scr(char title[], int height, int width, int pix_size);
+/* Opens and initializes the screen.
  *
  * title - the string to display across the top of the screen, which is limited
  *  	to 32 characters
@@ -17,49 +17,58 @@ int init_scr(char title[], int height, int width, int pix_size);
  * width - the width of the screen in pixels
  * pix_size - the size of a pixel
  *
- * This function opens a new terminal window and changes the settings of the
- * terminal window to the given arguments. It then initializes its internal
- * state.
+ * This function opens a new terminal window to serve as the screen and then
+ * initializes it with the given arguments.
  *
  * Returns 0 if successful; -1 if an error occurred.
  */
 
 
-int restore_scr(void);
-/* Restores the screen.
+int close_scr(void);
+/* Exits the screen.
  *
- * This function restores the screen to its settings before the program ran.
+ * This function closes the screen.
  *
  * Returns 0 if successful; -1 if an error occurred.
  */
 
 
-//typedef struct window_t Window;
-/* WINDOW is the primary type. It represents a two-dimensional array of pixels
- * that are simulated by using the character-based capabilities of the
- * terminal.
+int switch_buf(void);
+/* Switches the current buffer
+ *
+ * Returns the id of the new buffer; -1 if an error occurred.
  */
 
 
-//int init_window(void);
-/* Initializes the window.
+int color(int y, int x, int col);
+/* Colors the pixel located at y, x
  *
- * This function intializes the window. It saves the state of the current
- * window so that it can be restored when the program exits and sets the state
- * of the new window.
+ * This function sets the color of the pixel located at coordinates y, x in the
+ * current buffer.
  *
- * Returns -1 on error; 0 otherwise.
+ * y - the y coordinate of the pixel
+ * x - the x coordinate of the pixel
+ * col - the color to set the pixel to
+ *
+ * Returns 0 if successful; -1 if an error occurred.
  */
 
 
-//int move(Window *win, int row, int col);
-/* Moves the cursor.
+int draw(int *img, int buf);
+/* Draws the image to the buffer. 
  *
- * win - pointer to a window.
- * row - row to move the cursor to.
- * col - column to move the cursir to.
+ * img - a pointer to the image to draw.
+ * buf - the buffer to draw to
  *
- * Returns ERROR if win is NULL or if (row, col) are outside the window's
- * dimensions.
+ * Returns 0 if successful; -1 if an error occurred.
  */
+
+
+int display(void);
+/* Displays the current buffer.
+ *
+ * Returns 0 if successful; -1 if an error occurred.
+ */
+
+
 #endif /* DISPLAY_H */

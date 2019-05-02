@@ -13,6 +13,10 @@
 	</data>
 	<key>ProfileCurrentVersion</key>
 	<real>2.0499999999999998</real>
+	<key>ScrollbackLines</key>
+	<integer>0</integer>
+	<key>ShouldLimitScrollback</key>
+	<integer>1</integer>
 	<key>ShowActiveProcessInTitle</key>
 	<false/>
 	<key>ShowDimensionsInTitle</key>

@@ -13,17 +13,26 @@
 
 #define MAX_TITLE 33
 #define MAX_HEIGHT 500
-#define MAX_WIDTH 800
+#define MAX_WIDTH 1000
+#define MAX_BUF 500000
+#define MAX_COL 256
 #define MIN_HEIGHT 10
 #define MIN_WIDTH 10
 #define DEFAULT_FONT "Courier New PMST"
 #define DEFAULT_FONT_SIZE 1 
+#define MAX_TTYNAME 32
+
+/* ANSI Escape sequence */
+#define ENTER_ALT_SCREEN "\x1b[?1049h" 
+#define EXIT_ALT_SCREEN "\x1b[?10491" 
+#define CLEAR_SCREEN "\x1b[2J" 
 
 #ifdef __APPLE__
 
 #define OSA "osascript -e \"tell app \\\"Terminal\\\" "
 #define NEW_WIN "open -a Terminal.app res/screen.terminal"
 #define CNT_WIN OSA"to count windows\""
+#define EXIT_WIN OSA"to close window id %d\""
 
 #define GET_WIN_TTY OSA"to get tty of window %d\""
 #define GET_WIN_ID OSA"to get id of window %d\""
@@ -41,28 +50,16 @@
 #define SET_WIN_BNDS OSA"to get bounds of window id to {%d,%d,%d,%d}\"" 
 #define SET_WIN_ROWS OSA"to set number of rows of window id %d to %d\"" 
 #define SET_WIN_COLS OSA"to set number of columns of window id %d to %d\"" 
+#define SET_WIN_TITLE OSA"to set custom title of window id %d to \\\"%s\\\"\""
 
 #endif
 
-#define MAX_TTYNAME 32
 /*
 
-
-#define SCREEN_DEFAULT_HEIGHT 200
-#define SCREEN_DEFAULT_WIDTH 300
-
-
-#define WINDOW_ROWS 40
-#define WINDOW_COLUMNS 100
-
-
-#define ENTER_ALT_SCREEN "\x1b[?1049h" 
-#define EXIT_ALT_SCREEN "\x1b[?10491" 
 #define UP(N) printf("\x1b[%dA", N) 
 #define DOWN(N) printf("\x1b[%dB", N)
 #define RIGHT(N) printf("\x1b[%dC", N) 
 #define LEFT(N) printf("\x1b[%dD", N) 
-#define MOVE(ROW, COL) "\x1b[" #ROW ";" #COL "H" 
 
 #ifdef __APPLE__
 
@@ -110,94 +107,123 @@ static int n_pix = sizeof(pix_tbl) / sizeof(struct pix);
 
 
 typedef struct scr {
-	char title[MAX_TITLE];
-	int pix_size;
-	int height;
-	int width;
-	int cur_buf;
-	int buf[2][MAX_HEIGHT][MAX_WIDTH]; // 256 color array
+	char title[MAX_TITLE]; // string to display above the window
+	int pix_size; // the size of the font
+	int height; // number of rows
+	int width; // number of columns
+	int cur_buf; // the buffer to be displayed
+	int buf[2][MAX_BUF]; // 256 color array
 	int row_sc; // scalar to multiply the height by to get the column
 	int col_sc; // scalar to multiply the width by to get the row
 	int ppr; // the number of physical pixels per row 
 	int ppc; // the number of physical pixels per column
 	int win_id; // the unique id of the window from the OS
 	char tty[MAX_TTYNAME]; // the name of the terminal
-	int fd; // the file descriptor for the terminal
+	int fdr; // the read file descriptor for the terminal
+	int fdw; // the write file descriptor for the terminal
 	int cur_x; // the x coordinate of the screen pointer
 	int cur_y; // the y coordinate of the screen pointer
 } Scr;
-
 Scr scr;
-
-
-//struct pscr_t { /* the entire physical monitor screen */
-	//int size; /* size in inches of the screen */
-	//int height; /* height in pixels */
-	//int width; /* width in pixels */
-//};
-
-
-//struct pwin_t { // physical terminal window
-	//int rows; // number of rows
-	//int cols; // number of columns
-	//int height; // height in pixels
-	//int width; // width in pixels
-	//char font_name[32];
-	//int font_size; 
-//};
-
-/*
-static int save_pwin(void);
-static int set_scr(int height, int width, int res);
-static int set_font_size(int size);
-
-*/
-//struct window {
-	//int rows; /* number of rows */
-	//int cols; /* number of columns */
-	//int height; /* height in actual pixels */
-   	//int width; /* width in actual pixels */
-	//int pixels_per_row; /* pixels per row */
-	//int pixels_per_col; /* pixels per column */
-	//int pixel_height;
-	//int pixel_width;
-	//char font_name[32];
-	//int font_size; 
-//
-	//int l_y; /* number of rows per logical pixel */
-	//int l_x; /* number of columns per logical pixel */
-	//int l_height; /* height in logical pixels */
-	//int l_width; /* width in logical pixels */
-	//char *buffer; /* array of pixels */
-//};
-
-//struct pscr_t pscr; /* physical screen */
-//struct pwin_t pwin; /* terminal window */
 
 
 static int check_scr_args(char title[], int height, int width, int pix_size);
 static int init_scr_state(char title[], int height, int width, int pix_size);
 static int create_win(void);
 static int conn_win(void);
-//static int get_font_size(void);
-static int set_font_size(int size);
-static int print_win_size(void)
+static int set_win_props(void);
+static int move(int y, int x);
 
 
-int init_scr(char title[], int height, int width, int pix_size)
+int open_scr(char title[], int height, int width, int pix_size)
 {
 	if (!check_scr_args(title, height, width, pix_size))
 		return -1;
+	
 	if (init_scr_state(title, height, width, pix_size) == -1)
 		return -1;
+	
 	if (create_win() == -1)
 		return -1;
+	
 	if (conn_win() == -1)
 		return -1;
-	if (set_font_size(pix_size) == -1)
+	
+	if (set_win_props() == -1)
 		return -1;
 
 	return 0;
+}
+
+
+int close_scr(void)
+{
+	int status;
+	char cmd[100];
+	
+	sprintf(cmd, EXIT_WIN, scr.win_id);
+	status = system(cmd);
+	if (!WIFEXITED(status))
+		return -1;
+
+	return 0;
+}
+
+
+int switch_buf(void)
+{
+	scr.cur_buf = (scr.cur_buf + 1) % 2;
+
+	return scr.cur_buf;
+}
+
+
+int color(int y, int x, int col)
+{
+	if (y > scr.height || y < 0)
+		return -1;
+
+	if (x > scr.width || x < 0)
+		return -1;
+
+	if (col > MAX_COL || col < 0)
+		return -1;
+
+	scr.buf[scr.cur_buf][y * scr.width + x] = col;
+
+	return 0;
+}
+	
+
+int display(void)
+{
+	int i, j, n, col;
+	char cmd[20];
+
+	for (i = 0; i < scr.height; i++)
+		for (j = 0; j < scr.width; j++) {
+			/* move the cursor. top left corner is 1,1 */
+			n = sprintf(cmd, "\x1b[%d;%dH", i + 1, j + 1);
+			write(scr.fdw, cmd, n);
+
+			/* color the pixel */
+			col = scr.buf[scr.cur_buf][i * scr.width + j];
+			n = sprintf(cmd, "\x1b[48;5;%dm \x1b[0m", col);
+			write(scr.fdw, cmd, n);
+		}
+
+	return 0;
+}
+
+
+static int move(int y, int x)
+{
+	char cmd[11];
+	int n;
+	
+	n = sprintf(cmd, "\x1b[%d;%dH", y, x); 
+
+	return write(scr.fdw, cmd, n);
 }
 
 
@@ -237,7 +263,7 @@ static int init_scr_state(char title[], int height, int width, int pix_size)
 	scr.cur_buf = 0;
 	for (i = 0; i < height; i++)
 		for (j = 0; j < width; j++)
-			scr.buf[0][i][j] = scr.buf[1][i][j] = 0;
+			scr.buf[0][i * width + j] = scr.buf[1][i * width + j] = 0;
 	for (i = 0; i < n_pix; i++) {
 		if (pix_tbl[i].size == pix_size) {
 			scr.row_sc = pix_tbl[i].row_sc; 
@@ -348,11 +374,17 @@ static int conn_win(void)
 {
 	//off_t pos;
 
-	if ((scr.fd = open(scr.tty, O_RDWR | O_NOCTTY)) == -1)
+	if ((scr.fdr = open(scr.tty, O_RDONLY | O_NOCTTY)) == -1)
 		return -1;
+	
+	if ((scr.fdw = open(scr.tty, O_WRONLY | O_NOCTTY)) == -1)
+		return -1;
+
+	if (write(scr.fdw, ENTER_ALT_SCREEN, strlen(ENTER_ALT_SCREEN)) == -1)
+		return -1;
+
 	//pos = lseek(scr.fd, 0, SEEK_CUR);
 	//printf("%lld\n", pos);
-	//printf("fd %d\n", scr.fd);
 	//write(scr.fd, "HI", 2);
 	//pos = lseek(scr.fd, 0, SEEK_CUR);
 	//printf("%lld\n", pos);
@@ -362,36 +394,30 @@ static int conn_win(void)
 	return 0;
 }
 
-/*
-static int get_font_size(void)
-{
-	FILE *fp;
-	char buf[32], *end, cmd[100];
-	int size;
 
-	sprintf(cmd, GET_FONT_SIZE, scr.win_id);
-	if ((fp = popen(cmd, "r")) == NULL)
-		return -1;
-	if (fgets(buf, 32, fp) == NULL)
-		return -1;
-	if (pclose(fp) == -1)
-		return -1;
-
-	buf[strlen(buf) - 1] = '\0'; // remove the newline char added by fgets 
-	errno = 0;
-	if ((size = (int) strtol(buf, &end, 10)) == 0 && errno != 0)
-		return -1;
-
-	return size;
-}
-*/
-
-static int set_font_size(int size)
+static int set_win_props(void)
 {
 	int status;
 	char cmd[100];
 
-	sprintf(cmd, SET_FONT_SIZE, scr.win_id, size);
+	/* pixel size */
+	sprintf(cmd, SET_FONT_SIZE, scr.win_id, scr.pix_size);
+	status = system(cmd);
+	if (!WIFEXITED(status))
+		return -1;
+
+	/* height and width */
+	sprintf(cmd, SET_WIN_ROWS, scr.win_id, scr.height);
+	status = system(cmd);
+	if (!WIFEXITED(status))
+		return -1;
+
+	sprintf(cmd, SET_WIN_COLS, scr.win_id, scr.width);
+	status = system(cmd);
+	if (!WIFEXITED(status))
+		return -1;
+
+	sprintf(cmd, SET_WIN_TITLE, scr.win_id, scr.title);
 	status = system(cmd);
 	if (!WIFEXITED(status))
 		return -1;
@@ -399,18 +425,11 @@ static int set_font_size(int size)
 	return 0;
 }
 
-//static int set_font_size(int size);
-	/* font name */
-	//fp = popen(GET_FONT_NAME, "r");
-	//fgets(pwin.font_name, 32, fp);
-	//pwin.font_name[strlen(pwin.font_name) - 1] = '\0';
-	//pclose(fp);
 
-
-
+/*
 static int print_win_size(void)
 {
-	struct winsize size; /* ws_row, ws_col, ws_ypixel, ws_xpixel */
+	struct winsize size; ws_row, ws_col, ws_ypixel, ws_xpixel
 
 	ioctl(STDOUT_FILENO, TIOCGWINSZ, &size);
 	printf("Rows %d\n", size.ws_row);
@@ -420,6 +439,7 @@ static int print_win_size(void)
 
 	return 0;
 }
+*/
 
 	/*
 	char buf[32];
@@ -622,6 +642,8 @@ void display_squared(struct squared_t *squared)
 				squared->row + i,
 				squared->col + j,
 				"\x1b[48;5;%dm \x1b[0m", squared->color);
+	//printf("\x1b[48;5;%dm \x1b[0m\n", 121);
+	//write(scr.fd, "\x1b[48;5;121m \x1b[0m", 16);
 	
 	printf("\x1b[48;5;%dm \x1b[0m\n", 246);
 

@@ -1,14 +1,15 @@
 #include <stdio.h>
+#include <unistd.h>
 #include "../inc/display.h"
 
 
 int main(void)
 {
-	int i;
+	int i, buf;
 
-	i = init_scr("Chess", 20, 40, 12);
-	printf("Return code is %d\n", i);
-	//print_win_size();
+	i = open_scr("Chess", 20, 40, 12);
+	display();
+	//close_scr();
 
 	return 0;
 }
