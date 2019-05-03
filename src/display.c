@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,6 +124,9 @@ typedef struct scr {
 	int fdw; // the write file descriptor for the terminal
 	int cur_x; // the x coordinate of the screen pointer
 	int cur_y; // the y coordinate of the screen pointer
+	pthread_t read_th; // thread that continually reads from the terminal
+	char in_buf[100]; // buffer for input
+	struct termios term; // terminal properties
 } Scr;
 Scr scr;
 
@@ -132,7 +136,8 @@ static int init_scr_state(char title[], int height, int width, int pix_size);
 static int create_win(void);
 static int conn_win(void);
 static int set_win_props(void);
-static int move(int y, int x);
+static int do_read_loop(void);
+static void *read_loop(void *args);
 
 
 int open_scr(char title[], int height, int width, int pix_size)
@@ -151,6 +156,9 @@ int open_scr(char title[], int height, int width, int pix_size)
 	
 	if (set_win_props() == -1)
 		return -1;
+	
+	if (do_read_loop() == -1)
+		return -1;
 
 	return 0;
 }
@@ -160,6 +168,9 @@ int close_scr(void)
 {
 	int status;
 	char cmd[100];
+
+	pthread_cancel(scr.read_th);
+	pthread_join(scr.read_th, NULL);
 	
 	sprintf(cmd, EXIT_WIN, scr.win_id);
 	status = system(cmd);
@@ -212,18 +223,13 @@ int display(void)
 			write(scr.fdw, cmd, n);
 		}
 
+	// delete this later
+	// cursor color
+	n = sprintf(cmd, "\x1b]12;red\x1b\\");
+			//"\x1b]12;blue\x1b\x5C");
+	write(scr.fdw, cmd, n);
+		
 	return 0;
-}
-
-
-static int move(int y, int x)
-{
-	char cmd[11];
-	int n;
-	
-	n = sprintf(cmd, "\x1b[%d;%dH", y, x); 
-
-	return write(scr.fdw, cmd, n);
 }
 
 
@@ -372,7 +378,7 @@ static int create_win(void)
 
 static int conn_win(void)
 {
-	//off_t pos;
+	//struct termios term;
 
 	if ((scr.fdr = open(scr.tty, O_RDONLY | O_NOCTTY)) == -1)
 		return -1;
@@ -382,6 +388,21 @@ static int conn_win(void)
 
 	if (write(scr.fdw, ENTER_ALT_SCREEN, strlen(ENTER_ALT_SCREEN)) == -1)
 		return -1;
+
+	/* Turn on non-canonical mode, which returns characters immediately.
+	 * Also turn off echoing of input characters to the screen.
+	 */
+
+	if (tcgetattr(scr.fdr, &scr.term) == -1)
+		printf("Unable to get terminal attributes.\n");
+	scr.term.c_lflag &= ~(ECHO | ICANON);
+	scr.term.c_cc[VMIN] = 1;
+	scr.term.c_cc[VTIME] = 0;
+	tcsetattr(scr.fdr, TCSANOW, &scr.term);
+	tcgetattr(scr.fdr, &scr.term);
+	if ((scr.term.c_lflag & (ECHO | ICANON)) != 0)
+		printf("Hmmm\n");
+
 
 	//pos = lseek(scr.fd, 0, SEEK_CUR);
 	//printf("%lld\n", pos);
@@ -426,6 +447,26 @@ static int set_win_props(void)
 }
 
 
+static int do_read_loop(void)
+{
+	/* Continually reads from the terminal and outputs to a file */
+	if (pthread_create(&scr.read_th, NULL, read_loop, NULL) != 0)
+		return -1;
+
+	return 0;
+}
+
+
+static void *read_loop(void *args)
+{
+	while (1) {
+		read(scr.fdr, scr.in_buf, 1);
+		write(STDOUT_FILENO, scr.in_buf, 1);
+	}
+
+	return NULL;
+}
+
 /*
 static int print_win_size(void)
 {
@@ -441,54 +482,7 @@ static int print_win_size(void)
 }
 */
 
-	/*
-	char buf[32];
-	if ((out = popen(GET_FONT_SIZE, "r")) == NULL)
-		return -1;
-	if (fgets(buf, 32, out) == NULL)
-		return -1;
-	pwin.font_size = atoi(buf);
-	if (pclose(out) == -1)
-		return -1;
-		*/
-	/* Set the font size and name */
-	//if (set_font_size(1) == -1)
-		//return -1;
-	//if (popen(SET_FONT_NAME(Arial), "r") == NULL)
-	//	return -1;
-
-	//scr.row_res = size.ws_ypixel / size.ws_row; 
-	//scr.col_res = size.ws_xpixel / size.ws_col; 
-
-//	return 0;
-//}
-
-
-	/*
-int restore_scr(void)
-{
-	if (set_font_size(pwin.font_size) == -1)
-		return -1;
-
-	return 0;
-}
-
-
-static int set_font_size(int size)
-{
-	FILE *fp;
-	char cmd[160];
-	sprintf(cmd, SET_FONT_SIZE, size);
-	if ((fp = popen(cmd, "r")) == NULL) {
-		pclose(fp);
-		return -1;
-	}
-	pclose(fp);
-
-	return 0;
-}
-
-
+/*
 static int save_pwin(void)
 {
 	FILE *fp;
@@ -629,24 +623,3 @@ static int save_pwin(void)
 // {
 	// return NULL;
 // }
-
-
-/*
-void display_squared(struct squared_t *squared)
-{
-	int i, j;
-
-	for (i = 0; i < squared->width; i ++)
-		for (j = 0; j < squared->height; j++)
-			mvprintw(
-				squared->row + i,
-				squared->col + j,
-				"\x1b[48;5;%dm \x1b[0m", squared->color);
-	//printf("\x1b[48;5;%dm \x1b[0m\n", 121);
-	//write(scr.fd, "\x1b[48;5;121m \x1b[0m", 16);
-	
-	printf("\x1b[48;5;%dm \x1b[0m\n", 246);
-
-	return;
-}
-*/
