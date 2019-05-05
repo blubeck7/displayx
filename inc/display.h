@@ -1,33 +1,43 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
+/* Events */
+#define KEY 0
+#define MOUSE 1
 
+typedef struct event {
+	int type; /* KEY OR MOUSE */	
+	int code; // extended ascii code for key events
+	int y; // y coord for mouse event
+	int x; // x coord for mouse event
+} Event;
+
+/* Screen */
 /* There is a single, global instance of the pixel screen. It has two buffers.
  * One of the buffers is the current buffer and the other buffer is the next
  * buffer. The current buffer is always the buffer that is displayed.
  */
 
-
-int open_scr(char title[], int height, int width, int pix_size);
-/* Opens and initializes the screen.
+int init_scr(char title[], int height, int width, int pix_size);
+/* Initializes the screen.
  *
- * title - the string to display across the top of the screen, which is limited
- *  	to 32 characters
- * height - the height of the screen in pixels
- * width - the width of the screen in pixels
- * pix_size - the size of a pixel
+ * This function initializes a new terminal window to serve as the screen.
  *
- * This function opens a new terminal window to serve as the screen and then
- * initializes it with the given arguments.
+ * title - the string to display across the top of the screen. The title is
+ *  	limited to 32 characters.
+ * height - the height of the screen in pixels.
+ * width - the width of the screen in pixels.
+ * pix_size - the size of a pixel.
  *
  * Returns 0 if successful; -1 if an error occurred.
  */
 
 
 int close_scr(void);
-/* Exits the screen.
+/* Closes the screen and exits the program.
  *
- * This function closes the screen.
+ * This function closes the screen and exits the program. It is the last thing
+ * that should be called from main.
  *
  * Returns 0 if successful; -1 if an error occurred.
  */

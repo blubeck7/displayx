@@ -1,6 +1,11 @@
+/* TODO: add exit handler using atexit function
+ */
+#define _POSIX_C_SOURCE 200809L
+
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,21 +17,30 @@
 #include "../inc/display.h"
 
 
-#define MAX_TITLE 33
+#define MAX_TITLE 32
 #define MAX_HEIGHT 500
 #define MAX_WIDTH 1000
 #define MAX_BUF 500000
 #define MAX_COL 256
+#define MAX_IN 256 // max num of chars that can be stored in the input buffer
 #define MIN_HEIGHT 10
 #define MIN_WIDTH 10
 #define DEFAULT_FONT "Courier New PMST"
 #define DEFAULT_FONT_SIZE 1 
 #define MAX_TTYNAME 32
 
+/* Terminal Modes */
+#define RESET 0
+#define RAW 1
+
 /* ANSI Escape sequence */
 #define ENTER_ALT_SCREEN "\x1b[?1049h" 
 #define EXIT_ALT_SCREEN "\x1b[?10491" 
 #define CLEAR_SCREEN "\x1b[2J" 
+
+/* Basic colors */
+#define BLACK 0
+#define WHITE 15
 
 #ifdef __APPLE__
 
@@ -108,7 +122,7 @@ static int n_pix = sizeof(pix_tbl) / sizeof(struct pix);
 
 
 typedef struct scr {
-	char title[MAX_TITLE]; // string to display above the window
+	char title[MAX_TITLE + 1]; // string to display above the window
 	int pix_size; // the size of the font
 	int height; // number of rows
 	int width; // number of columns
@@ -119,45 +133,49 @@ typedef struct scr {
 	int ppr; // the number of physical pixels per row 
 	int ppc; // the number of physical pixels per column
 	int win_id; // the unique id of the window from the OS
-	char tty[MAX_TTYNAME]; // the name of the terminal
+	char ttyname[MAX_TTYNAME + 1]; // the name of the terminal
 	int fdr; // the read file descriptor for the terminal
 	int fdw; // the write file descriptor for the terminal
 	int cur_x; // the x coordinate of the screen pointer
 	int cur_y; // the y coordinate of the screen pointer
 	pthread_t read_th; // thread that continually reads from the terminal
-	char in_buf[100]; // buffer for input
+	int in_buf[MAX_IN]; // buffer for input
+	int in_pos; // position 
 	struct termios term; // terminal properties
+	struct termios pterm; // previous terminal properties
+	int ttystate; // raw mode or normal mode
 } Scr;
 Scr scr;
 
 
-static int check_scr_args(char title[], int height, int width, int pix_size);
-static int init_scr_state(char title[], int height, int width, int pix_size);
-static int create_win(void);
-static int conn_win(void);
+static int check_args(char title[], int height, int width, int pix_size);
+static int init_props(char title[], int height, int width, int pix_size);
+static int init_term(void);
+static int get_ttyname(void);
+static int get_win_id(void);
 static int set_win_props(void);
-static int do_read_loop(void);
+static int tty_raw(int fd);
+static int tty_reset(int fd);
+static int do_event_loop(void);
 static void *read_loop(void *args);
+static void print_in_buf(void);
 
 
-int open_scr(char title[], int height, int width, int pix_size)
+int init_scr(char title[], int height, int width, int pix_size)
 {
-	if (!check_scr_args(title, height, width, pix_size))
+	if (!check_args(title, height, width, pix_size))
 		return -1;
 	
-	if (init_scr_state(title, height, width, pix_size) == -1)
+	if (init_props(title, height, width, pix_size) == -1)
 		return -1;
 	
-	if (create_win() == -1)
+	if (init_term() == -1)
+		return -1;
+
+	if (tty_raw(scr.fdr) == -1)
 		return -1;
 	
-	if (conn_win() == -1)
-		return -1;
-	
-	if (set_win_props() == -1)
-		return -1;
-	
-	if (do_read_loop() == -1)
+	if (do_event_loop() == -1)
 		return -1;
 
 	return 0;
@@ -172,11 +190,15 @@ int close_scr(void)
 	pthread_cancel(scr.read_th);
 	pthread_join(scr.read_th, NULL);
 	
+	tty_reset(scr.fdr);
+	print_in_buf();
+	sleep(3);
+
 	sprintf(cmd, EXIT_WIN, scr.win_id);
 	status = system(cmd);
 	if (!WIFEXITED(status))
 		return -1;
-
+	
 	return 0;
 }
 
@@ -233,11 +255,11 @@ int display(void)
 }
 
 
-static int check_scr_args(char title[], int height, int width, int pix_size)
+static int check_args(char title[], int height, int width, int pix_size)
 {
 	int i, flag = 0;
 
-	if (strnlen(title, MAX_TITLE) > MAX_TITLE - 1)
+	if (strnlen(title, MAX_TITLE + 1) > MAX_TITLE)
 		return 0;
 
 	if (height > MAX_HEIGHT || height < MIN_HEIGHT)
@@ -258,7 +280,7 @@ static int check_scr_args(char title[], int height, int width, int pix_size)
 }
 
 
-static int init_scr_state(char title[], int height, int width, int pix_size)
+static int init_props(char title[], int height, int width, int pix_size)
 {
 	int i, j;
 
@@ -269,7 +291,7 @@ static int init_scr_state(char title[], int height, int width, int pix_size)
 	scr.cur_buf = 0;
 	for (i = 0; i < height; i++)
 		for (j = 0; j < width; j++)
-			scr.buf[0][i * width + j] = scr.buf[1][i * width + j] = 0;
+			scr.buf[0][i * width + j] = scr.buf[1][i * width + j] = WHITE;
 	for (i = 0; i < n_pix; i++) {
 		if (pix_tbl[i].size == pix_size) {
 			scr.row_sc = pix_tbl[i].row_sc; 
@@ -278,23 +300,61 @@ static int init_scr_state(char title[], int height, int width, int pix_size)
 			scr.ppc = pix_tbl[i].ppc; 
 		}
 	}
+	for (i = 0; i < MAX_IN; i++)
+	   scr.in_buf[i] = -1;
+	scr.win_id = -1;
+	scr.ttyname[0] = '\0';
+	scr.fdr = STDIN_FILENO;
+	scr.fdw = STDOUT_FILENO;;
+	scr.cur_x = scr.cur_y = 1;
+	scr.in_pos = 0;
+	scr.ttystate = RESET;
 
 	return 0;
 }
 
 
-static int create_win(void)
+static int init_term(void)
 {
-	/* Need to retrieve the id and terminal name of the new window in order to
-	 * read and write to it via stdin and stdout. First, we get the ids and
-	 * teminal names for all open windows. Then we create the new window and
-	 * see what the new id and new terminal name is.
+	/* Get the terminal's name and the id of the terminal's window. Then set
+	 * the title, height, width and pixel size.
 	 */
-	FILE *out;
-	char buf[32], cmd[100], tty[10][32], ttyname[32];
-	int n_win, win_id[10], i, j, n, id, flag, status;
 
-	/* Get the existing terminal windows id and name*/
+	if (get_ttyname() == -1)
+		return -1;
+
+	if (get_win_id() == -1)
+		return -1;
+
+	if (set_win_props() == -1)
+		return -1;
+
+	return 0;
+}
+
+
+static int get_ttyname(void)
+{
+	char *name;
+
+	if ((name = ttyname(scr.fdr)) == NULL)
+		return -1;
+	strncpy(scr.ttyname, name, MAX_TTYNAME + 1);
+
+	return 0;
+}
+
+
+static int get_win_id(void)
+{
+	/* Loop through the windows and get the id of the window whose tty is the
+	 * one for the screen.
+	 */
+
+	FILE *out;
+	char buf[32], cmd[100], ttyname[MAX_TTYNAME + 1];
+	int n_win, i;
+
 	if ((out = popen(CNT_WIN, "r")) == NULL)
 		return -1;
 	if (fgets(buf, 32, out) == NULL)
@@ -307,110 +367,125 @@ static int create_win(void)
 		sprintf(cmd, GET_WIN_TTY, i);
 		if ((out = popen(cmd, "r")) == NULL)
 			return -1;
-		if (fgets(tty[i], 32, out) == NULL)
-			return -1;
-		if (pclose(out) == -1)
-			return -1;
-
-		sprintf(cmd, GET_WIN_ID, i);
-		if ((out = popen(cmd, "r")) == NULL)
-			return -1;
-		if (fgets(buf, 32, out) == NULL)
-			return -1;
-		if (pclose(out) == -1)
-			return -1;
-		win_id[i] = atoi(buf);
-	}
-
-	/* Create the new terminal window */
-	status = system(NEW_WIN);
-	if (!WIFEXITED(status))
-		return -1;
-
-	/* Get the terminal and id of the new window*/
-	if ((out = popen(CNT_WIN, "r")) == NULL)
-		return -1;
-	if (fgets(buf, 32, out) == NULL)
-		return -1;
-	if (pclose(out) == -1)
-		return -1;
-	n = atoi(buf);
-
-	for (i = 0; i < n; i++) {
-		flag = 1;
-
-		sprintf(cmd, GET_WIN_TTY, i);
-		if ((out = popen(cmd, "r")) == NULL)
-			return -1;
 		if (fgets(ttyname, 32, out) == NULL)
 			return -1;
 		if (pclose(out) == -1)
 			return -1;
+		/* fgets includes a newline character at the end */
+		ttyname[strnlen(ttyname, MAX_TTYNAME + 1) - 1] = '\0';
 
-		sprintf(cmd, GET_WIN_ID, i);
-		if ((out = popen(cmd, "r")) == NULL)
-			return -1;
-		if (fgets(buf, 32, out) == NULL)
-			return -1;
-		if (pclose(out) == -1)
-			return -1;
-		id = atoi(buf);
-
-		for (j = 0; j < n_win; j++) {
-			if (strcmp(ttyname, tty[j]) == 0) {
-				flag = 0;
-				break;
-			}
+		if (strncmp(scr.ttyname, ttyname, MAX_TTYNAME + 1) == 0) {
+			// Found the window
+			sprintf(cmd, GET_WIN_ID, i);
+			if ((out = popen(cmd, "r")) == NULL)
+				return -1;
+			if (fgets(buf, 32, out) == NULL)
+				return -1;
+			if (pclose(out) == -1)
+				return -1;
+			scr.win_id = atoi(buf);
+			break;
 		}
-
-		if (flag) {
-			ttyname[strnlen(ttyname, MAX_TTYNAME) - 1] = '\0';
-			strcpy(scr.tty, ttyname);
-			scr.win_id = id;
-			scr.cur_x = scr.cur_y = 0;
-		}
-
 	}
 
 	return 0;
 }
 
 
+/*
 static int conn_win(void)
 {
-	//struct termios term;
-
-	if ((scr.fdr = open(scr.tty, O_RDONLY | O_NOCTTY)) == -1)
+	if ((scr.fdr = open(scr.tty, O_RDONLY)) == -1)
 		return -1;
 	
-	if ((scr.fdw = open(scr.tty, O_WRONLY | O_NOCTTY)) == -1)
+	if ((scr.fdw = open(scr.tty, O_WRONLY)) == -1)
 		return -1;
 
+	if (set_win_props() == -1)
+		return -1;
+
+	if (tty_raw(scr.fdr) == -1)
+		return -1;
+	
+//	if (tty_raw(scr.fdw) == -1)
+//		return -1;
+	
 	if (write(scr.fdw, ENTER_ALT_SCREEN, strlen(ENTER_ALT_SCREEN)) == -1)
 		return -1;
 
-	/* Turn on non-canonical mode, which returns characters immediately.
-	 * Also turn off echoing of input characters to the screen.
-	 */
+	return 0;
+}
+*/
 
-	if (tcgetattr(scr.fdr, &scr.term) == -1)
-		printf("Unable to get terminal attributes.\n");
-	scr.term.c_lflag &= ~(ECHO | ICANON);
+static int tty_raw(int fd)
+{
+	int err;
+
+	if (scr.ttystate != RESET) {
+		errno = EINVAL;
+		return -1;
+	}
+	
+	tcflush(fd, TCIOFLUSH);
+
+	if (tcgetattr(fd, &scr.term) < 0)
+		return -1;
+	scr.pterm = scr.term;
+
+	/* Echo off, canonical mode off, extended input processing off, signal
+	 * chars off;
+	 */
+	scr.term.c_lflag &= ~(ECHO|ICANON|IEXTEN|ISIG);
+
+	/* No SIGINT on BREAK, turn off CR to NL, input parity check off, don't
+	 * strip the 8th bit of the input, output flow control off.
+	 */
+	scr.term.c_iflag &= ~(BRKINT|ICRNL|INPCK|ISTRIP|IXON);
+
+	/* Clear size bits, parity checking off */
+	scr.term.c_cflag &= ~(CSIZE|PARENB);
+
+	/*set 8 bits/char */
+	scr.term.c_cflag |= CS8;
+
+	/* output processing is off */
+	scr.term.c_oflag &= ~OPOST;
+
+	/* 1 byte at a time, no timer */
 	scr.term.c_cc[VMIN] = 1;
 	scr.term.c_cc[VTIME] = 0;
-	tcsetattr(scr.fdr, TCSANOW, &scr.term);
-	tcgetattr(scr.fdr, &scr.term);
-	if ((scr.term.c_lflag & (ECHO | ICANON)) != 0)
-		printf("Hmmm\n");
+	if (tcsetattr(fd, TCSANOW, &scr.term) == -1)
+		return -1;
 
+	if (tcgetattr(fd, &scr.term) < 0) {
+		err = errno;
+		tcsetattr(fd, TCSANOW, &scr.pterm);
+		errno = err;
+		return -1;
+	}
+	if ((scr.term.c_lflag & (ECHO|ICANON|IEXTEN|ISIG)) ||
+		(scr.term.c_iflag & (BRKINT|ICRNL|INPCK|ISTRIP|IXON)) ||
+		(scr.term.c_cflag & (CSIZE|PARENB|CS8)) != CS8 ||
+		(scr.term.c_oflag & OPOST) || scr.term.c_cc[VMIN] != 1 ||
+		scr.term.c_cc[VTIME] != 0) {
+		// only some changes were made
+		tcsetattr(fd, TCSANOW, &scr.pterm);
+		errno = EINVAL;
+		return -1;
+	}
+	
+	scr.ttystate = RAW;
+	
+	return 0;
+}
 
-	//pos = lseek(scr.fd, 0, SEEK_CUR);
-	//printf("%lld\n", pos);
-	//write(scr.fd, "HI", 2);
-	//pos = lseek(scr.fd, 0, SEEK_CUR);
-	//printf("%lld\n", pos);
-	//printf("\x1b[48;5;%dm \x1b[0m\n", 121);
-	//write(scr.fd, "\x1b[48;5;121m \x1b[0m", 16);
+int tty_reset(int fd)
+{
+	if (scr.ttystate == RESET)
+		return 0;
+	if (tcsetattr(fd, TCSANOW, &scr.pterm) < 0)
+		return -1;
+	scr.ttystate = RESET;
 
 	return 0;
 }
@@ -427,17 +502,19 @@ static int set_win_props(void)
 	if (!WIFEXITED(status))
 		return -1;
 
-	/* height and width */
+	/* height */
 	sprintf(cmd, SET_WIN_ROWS, scr.win_id, scr.height);
 	status = system(cmd);
 	if (!WIFEXITED(status))
 		return -1;
 
+	/* width */
 	sprintf(cmd, SET_WIN_COLS, scr.win_id, scr.width);
 	status = system(cmd);
 	if (!WIFEXITED(status))
 		return -1;
 
+	/* title */
 	sprintf(cmd, SET_WIN_TITLE, scr.win_id, scr.title);
 	status = system(cmd);
 	if (!WIFEXITED(status))
@@ -447,9 +524,9 @@ static int set_win_props(void)
 }
 
 
-static int do_read_loop(void)
+static int do_event_loop(void)
 {
-	/* Continually reads from the terminal and outputs to a file */
+	/* Continually reads from the terminal and generates events */
 	if (pthread_create(&scr.read_th, NULL, read_loop, NULL) != 0)
 		return -1;
 
@@ -459,12 +536,25 @@ static int do_read_loop(void)
 
 static void *read_loop(void *args)
 {
+	char ch;
+
 	while (1) {
-		read(scr.fdr, scr.in_buf, 1);
-		write(STDOUT_FILENO, scr.in_buf, 1);
+		read(scr.fdr, &ch, 1);
+	   	scr.in_buf[scr.in_pos] = ch;
+		scr.in_pos = (scr.in_pos + 1) % MAX_IN;
 	}
 
 	return NULL;
+}
+
+
+static void print_in_buf(void)
+{
+	int i;
+
+	for (i = 0; i < 12; i++)
+		printf("%#x", scr.in_buf[i]);
+	printf("\n");
 }
 
 /*
@@ -623,3 +713,100 @@ static int save_pwin(void)
 // {
 	// return NULL;
 // }
+
+	/* Need to retrieve the id and terminal name of the new window in order to
+	 * read and write to it via stdin and stdout. First, we get the ids and
+	 * teminal names for all open windows. Then we create the new window and
+	 * see what the new id and new terminal name is.
+	FILE *out;
+	char buf[32], cmd[100], tty[10][32];
+	int n_win, win_id[10], i, j, n, id, flag, status;
+	if (flag) {
+		ttyname[strnlen(ttyname, MAX_TTYNAME) - 1] = '\0';
+		strcpy(scr.tty, ttyname);
+		scr.win_id = id;
+		scr.cur_x = scr.cur_y = 0;
+	}
+
+
+	Get the existing terminal windows id and name
+	if ((out = popen(CNT_WIN, "r")) == NULL)
+		return -1;
+	if (fgets(buf, 32, out) == NULL)
+		return -1;
+	if (pclose(out) == -1)
+		return -1;
+	n_win = atoi(buf);
+
+	for (i = 0; i < n_win; i++) {
+		sprintf(cmd, GET_WIN_TTY, i);
+		if ((out = popen(cmd, "r")) == NULL)
+			return -1;
+		if (fgets(tty[i], 32, out) == NULL)
+			return -1;
+		if (pclose(out) == -1)
+			return -1;
+
+		sprintf(cmd, GET_WIN_ID, i);
+		if ((out = popen(cmd, "r")) == NULL)
+			return -1;
+		if (fgets(buf, 32, out) == NULL)
+			return -1;
+		if (pclose(out) == -1)
+			return -1;
+		win_id[i] = atoi(buf);
+	}
+
+	Create the new terminal window/
+	status = system(NEW_WIN);
+	if (!WIFEXITED(status))
+		return -1;
+
+	Get the terminal and id of the new window
+	if ((out = popen(CNT_WIN, "r")) == NULL)
+		return -1;
+	if (fgets(buf, 32, out) == NULL)
+		return -1;
+	if (pclose(out) == -1)
+		return -1;
+	n = atoi(buf);
+
+	for (i = 0; i < n; i++) {
+		flag = 1;
+
+		sprintf(cmd, GET_WIN_TTY, i);
+		if ((out = popen(cmd, "r")) == NULL)
+			return -1;
+		if (fgets(ttyname, 32, out) == NULL)
+			return -1;
+		if (pclose(out) == -1)
+			return -1;
+
+		sprintf(cmd, GET_WIN_ID, i);
+		if ((out = popen(cmd, "r")) == NULL)
+			return -1;
+		if (fgets(buf, 32, out) == NULL)
+			return -1;
+		if (pclose(out) == -1)
+			return -1;
+		id = atoi(buf);
+
+		for (j = 0; j < n_win; j++) {
+			if (strcmp(ttyname, tty[j]) == 0) {
+				flag = 0;
+				break;
+			}
+		}
+
+		if (flag) {
+			ttyname[strnlen(ttyname, MAX_TTYNAME) - 1] = '\0';
+			strcpy(scr.tty, ttyname);
+			scr.win_id = id;
+			scr.cur_x = scr.cur_y = 0;
+		}
+
+	}
+
+	return 0;
+}
+*/
