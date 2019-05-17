@@ -14,12 +14,13 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+
 #include "../inc/display.h"
+#include "../inc/event.h"
+#include "../inc/term.h"
+#include "../inc/window.h"
 
 
-#define MAX_TITLE 32
-#define MAX_HEIGHT 500
-#define MAX_WIDTH 1000
 #define MAX_BUF 500000
 #define MAX_COL 256
 #define MAX_IN 256 // max num of chars that can be stored in the input buffer
@@ -28,10 +29,6 @@
 #define DEFAULT_FONT "Courier New PMST"
 #define DEFAULT_FONT_SIZE 1 
 #define MAX_TTYNAME 32
-
-/* Terminal Modes */
-#define RESET 0
-#define RAW 1
 
 /* ANSI Escape sequence */
 #define ENTER_ALT_SCREEN "\x1b[?1049h" 

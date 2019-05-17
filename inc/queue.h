@@ -1,32 +1,27 @@
-/* queue.h - interface for a generic queue */
-
+/* queue.h - interface for a queue that stores integers. */
 #ifndef QUEUE_H
 #define QUEUE_H
 
+#include <pthread.h>
 
-#define MAXQUEUE 1000
-
-typedef void *Item;
-
-typedef struct node {
-	Item item;
-	struct node *next;
-} Node;
+#define MAX_QUEUE_SIZE 1024
 
 typedef struct queue {
-	Node *front;
-	Node *rear;
-	int items;
+	int size;
+	int front;
+	int back;
+	int items[MAX_QUEUE_SIZE];
+	pthread_mutex_t lock;
 } Queue;
 
+int init_queue(Queue *queue);
+int enqueue(Queue *queue, int item);
+int dequeue(Queue *queue, int *item);
+int queue_size(Queue *queue);
+int peak(Queue *queue, int *item, int pos);
+int is_queue_full(Queue *queue);
+int is_queue_empty(Queue *queue);
+int lock_queue(Queue *queue);
+int unlock_queue(Queue *queue);
 
-int init_queue(Queue *pq);
-int is_queue_full(const Queue *pq);
-int is_queue_empty(const Queue *pq);
-int count_queue_items(const Queue *pq);
-int enqueue(Item item, Queue *pq);
-int dequeue(Item *pitem, Queue *pq);
-int empty_queue(Queue *pq);
-
-
-#endif
+#endif //QUEUE_H

@@ -6,17 +6,12 @@
 
 int main(void)
 {
-	int i, buf;
-
+	//set_event_handler(event_handler);	
 	if (init_scr("Chess", 20, 40, 12) == -1)
 		return -1;
-
-	display();
-	color(10, 10, 67);
-	color(10, 11, 67);
-	display();
+	//while (run)
+		//;
 	sleep(10);
 	close_scr();
-
 	return 0;
 }
